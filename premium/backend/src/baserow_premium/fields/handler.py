@@ -1,14 +1,13 @@
 import json
 from typing import Optional
 
-from baserow_premium.fields.exceptions import AiFieldOutputParserException
-from baserow_premium.prompts import get_generate_formula_prompt
-
 from baserow.contrib.database.fields.registries import field_type_registry
 from baserow.contrib.database.table.models import Table
 from baserow.core.db import specific_iterator
 from baserow.core.generative_ai.exceptions import ModelDoesNotBelongToType
 from baserow.core.generative_ai.registries import generative_ai_model_type_registry
+from baserow_premium.fields.exceptions import AiFieldOutputParserException
+from baserow_premium.prompts import get_generate_formula_prompt
 
 from .pydantic_models import BaserowFormulaModel
 
@@ -75,5 +74,5 @@ class AIFieldHandler:
             return output_parser.parse(response)["formula"]
         except (OutputParserException, TypeError) as e:
             raise AiFieldOutputParserException(
-                "The model didn't respond with the correct output. " "Please try again."
+                "The model didn't respond with the correct output. Please try again."
             ) from e
