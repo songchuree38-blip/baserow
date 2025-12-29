@@ -1,3 +1,5 @@
+import Vue from 'vue'
+
 import { updateRowMetadataType } from '@baserow/modules/database/utils/row'
 
 /**
@@ -55,12 +57,67 @@ export const mutations = {
   UPDATE_ROW(state, { componentId, row }) {
     Object.assign(state.rows[componentId].row, row)
   },
-  UPDATE_ROW_METADATA(state, { rowId, rowMetadataType, updateFunction }) {
+  UPDATE_ROW_METADATA_TYPE(state, { rowId, rowMetadataType, updateFunction }) {
     Object.values(state.rows)
       .filter((data) => data.row.id === rowId)
       .forEach((data) =>
         updateRowMetadataType(data.row, rowMetadataType, updateFunction)
       )
+  },
+  /**
+   * Updates row metadata in the row modal.
+   * Deep merges new metadata with existing metadata, removing keys with null values.
+   */
+  UPDATE_ROW_METADATA(state, { rowId, metadata }) {
+    Object.values(state.rows)
+      .filter((data) => data.row.id === rowId)
+      .forEach((data) => {
+        const row = data.row
+
+        // Deep merge new metadata with existing metadata
+        const existingMetadata = row._?.metadata || {}
+        const mergedMetadata = { ...existingMetadata }
+
+        // Deep merge each metadata type (e.g., ai_field)
+        Object.keys(metadata).forEach((metadataType) => {
+          if (!mergedMetadata[metadataType]) {
+            mergedMetadata[metadataType] = {}
+          }
+          // Deep merge field-level metadata, but remove fields with null values
+          const newTypeMetadata = { ...mergedMetadata[metadataType] }
+          Object.entries(metadata[metadataType]).forEach(([key, value]) => {
+            if (value === null) {
+              delete newTypeMetadata[key]
+            } else {
+              newTypeMetadata[key] = value
+            }
+          })
+          mergedMetadata[metadataType] = newTypeMetadata
+        })
+
+        // Use single Vue.set to ensure reactivity
+        if (!row._) {
+          Vue.set(row, '_', { metadata: mergedMetadata })
+        } else {
+          Vue.set(row._, 'metadata', mergedMetadata)
+        }
+      })
+  },
+  /**
+   * Replaces row metadata in the row modal with the provided metadata.
+   * Used when rows_updated event provides the complete current metadata state.
+   */
+  REPLACE_ROW_METADATA(state, { rowId, metadata }) {
+    Object.values(state.rows)
+      .filter((data) => data.row.id === rowId)
+      .forEach((data) => {
+        const row = data.row
+        if (!row._) {
+          Vue.set(row, '_', { metadata })
+        } else {
+          Vue.set(row._, 'metadata', metadata)
+        }
+      })
   },
 }
 
@@ -116,8 +173,31 @@ export const actions = {
    * manually update the metadata of the row. This is used for example to update the
    * notification_mode setting of a row.
    */
-  updateRowMetadata({ commit }, { rowId, rowMetadataType, updateFunction }) {
-    commit('UPDATE_ROW_METADATA', { rowId, rowMetadataType, updateFunction })
+  updateRowMetadataType(
+    { commit },
+    { rowId, rowMetadataType, updateFunction }
+  ) {
+    commit('UPDATE_ROW_METADATA_TYPE', {
+      rowId,
+      rowMetadataType,
+      updateFunction,
+    })
+  },
+  /**
+   * Updates row metadata for a specific row without changing row values.
+   * Called when a rows_metadata_updated websocket event is received.
+   * Deep merges new metadata with existing metadata.
+   */
+  updateRowMetadata({ commit }, { rowId, metadata }) {
+    commit('UPDATE_ROW_METADATA', { rowId, metadata })
+  },
+  /**
+   * Replaces row metadata for a specific row with the provided metadata.
+   * Called when a rows_updated websocket event is received, where metadata
+   * represents the complete current state (not a delta).
+   */
+  replaceRowMetadata({ commit }, { rowId, metadata }) {
+    commit('REPLACE_ROW_METADATA', { rowId, metadata })
   },
 }
 

@@ -905,9 +905,13 @@ class Table(
         help_text="Indicates whether potentially missing m2m foreign key indexes have been added.",
     )
     field_metadata_column_added = models.BooleanField(
+        # The `db_default` must be False because this is used when an entry is created
+        # and no default value is set. This happens when the code adding this field
+        # is not yet deployed, so the metadata column does not exist.
+        db_default=False,
+        # However, if the new code is deployed, this default value is used,
+        # and in that case, the metadata column will be created automatically.
         default=True,
-        db_default=True,
-        null=True,
         help_text="Indicates whether the table has had the field_metadata column added.",
     )
 

@@ -12,7 +12,7 @@ The field metadata system provides a way to store and manage per-field, per-row 
 
 #### Database Schema
 
-Metadata is stored in a JSONB column named `field_metadata` on each table, added dynamically when first needed:
+Metadata is stored in a JSONB column named `field_metadata` on each table. New tables automatically include this column. For existing tables, the column is added when first needed by a field type that uses metadata:
 
 ```sql
 ALTER TABLE database_table_123
@@ -24,16 +24,19 @@ The column is automatically included in the table model when `field_metadata_col
 **Internal storage format** (in database):
 ```json
 {
-  "456": {  // field_id as string
-    "start": 1762348609.808954,  // generation started (Unix timestamp)
-    "end": 1762348635.456789,    // generation ended (Unix timestamp)
-    "ok": true                    // true=success, false=error
+  "456": {  // field_id as string - GENERATING state
+    "start": 1762348609.808954   // generation started (Unix timestamp)
   },
-  "457": {
+  "457": {  // ERROR state
     "start": 1762348610.123456,
     "end": 1762348612.789012,
     "ok": false,
     "error": "API timeout"        // error message (only when ok=false)
+  },
+  "458": {  // SUCCESS state (not returned in API)
+    "start": 1762348620.123456,
+    "end": 1762348625.789012,
+    "ok": true
   }
 }
 ```
@@ -42,14 +45,15 @@ The column is automatically included in the table model when `field_metadata_col
 ```json
 {
   "456": {"status": "generating"},  // has start, no end
-  "457": {"status": "error"}        // has end, ok=false (within 1 hour)
+  "457": {"status": "error"}        // has end, ok=false
+  // 458 not included - success state is not returned
 }
 ```
 
 Status is derived from the internal format:
 - Has `start` but no `end` → `"generating"`
 - Has `end` with `ok=true` → not returned (success = absence of metadata)
-- Has `end` with `ok=false` → `"error"` (expires after 1 hour)
+- Has `end` with `ok=false` → `"error"`
 
 **Key design decisions**:
 - Field IDs are stored as strings (JSON requirement)
@@ -79,22 +83,13 @@ if FieldMetadataHandler.is_metadata_available(model):
 
 **Location**: `backend/src/baserow/contrib/database/fields/metadata_handler.py`
 
-Generic handler providing CRUD operations for field metadata:
-
-- `get_metadata(model, row_ids, field_ids=None)` - Get metadata for rows (always pass list of row_ids, even for single row)
-- `set_metadata(model, updates, merge=True)` - Set metadata (always pass list of MetadataUpdate, even for single update)
-- `delete_metadata(model, field_id, row_ids=None)` - Delete metadata for a field (all rows or specific rows, uses custom `JSONBRemoveKey` Func)
-- `get_rows_by_metadata(model, field_id, key, value)` - Query rows by metadata key:value pair
-- `get_rows_with_metadata(model, field_id)` - Get all rows that have metadata for a specific field
-- `on_field_updated(field, field_type_changed)` - Handle field updates (clears metadata if type changed)
-- `on_field_deleted(field)` - Handle field deletion (removes all metadata for the field)
+Generic handler providing CRUD operations for field metadata. See the source file for method signatures.
 
 **Key features**:
 - Uses PostgreSQL's `jsonb_set` with `COALESCE` for atomic updates, avoiding race conditions
 - Custom Django ORM `Func` class (`JSONBRemoveKey`) for JSONB `-` operator to remove keys atomically
 - All methods gracefully degrade when metadata column doesn't exist
 
-See the file for complete implementation details and method signatures.
 
 #### 2. Field-Specific Handlers
 
@@ -104,18 +99,19 @@ Field types can implement handlers with domain-specific logic.
 
 **Location**: `premium/backend/src/baserow_premium/fields/ai_field_metadata.py`
 
-Provides AI-specific methods:
-- `set_generating(ai_field, row_ids)` - Mark rows as generating with start timestamp (accepts int or list). **Clears any previous state** (success/error) when called.
-- `set_success(model, row_id, field_id)` - Mark as successful with completion timestamp (preserves start time)
-- `set_error(model, row_id, field_id, error_message)` - Mark as failed with error details. **Error messages are truncated to 500 characters** to prevent JSONB bloat.
-- `clear_metadata(ai_field, row_ids)` - Clear metadata for rows (when batch fails midway)
-- `broadcast_generation_started(ai_field, row_ids, user)` - Broadcast metadata updates via WebSocket
+Provides AI-specific methods for managing generation status:
+- Set rows to "generating" state (clears any previous state)
+- Combined helper that sets status AND broadcasts WebSocket update (preferred method)
+- Mark as successful with completion timestamp
+- Mark as failed with error details
+- Clear metadata for rows (when batch fails midway)
+- Broadcast metadata updates via WebSocket
 
 **Status enum** (`AIGenerationStatus`): `GENERATING`, `SUCCESS`, `ERROR` (derived from metadata presence)
 
 **Metadata keys** (`AIMetadataKeys`): Human-readable storage names (`"start"`, `"end"`, `"ok"`, `"error"`)
 
-See the file for complete implementation including timestamp preservation logic.
+See the source file for method signatures and implementation details.
 
 ### API Integration
 
@@ -129,9 +125,9 @@ The `row_metadata_registry` provides a plugin system for exposing metadata via t
 
 The `AIFieldMetadataType` class:
 1. Extends `RowMetadataType` base class
-2. Implements `generate_metadata_for_rows(user, table, row_ids)` - fetches metadata from database
-3. Implements `_transform_metadata_for_api(metadata)` - converts short keys to readable format
-4. Implements `get_example_serializer_field()` - provides API documentation
+2. Fetches metadata from database for specified rows
+3. Transforms internal format to API format
+4. Provides API documentation via serializer field
 
 **Registration**: In app's `ready()` method (`premium/backend/src/baserow_premium/apps.py`):
 ```python
@@ -170,7 +166,7 @@ GET /api/database/views/grid/123/?include=row_metadata
 
 **AI field metadata format**:
 - `{"status": "generating"}` - AI is currently generating a value
-- `{"status": "error"}` - Generation failed (shown for 1 hour after error)
+- `{"status": "error"}` - Generation failed
 - No metadata returned for success state (absence = success or never generated)
 
 **Supported endpoints**:
@@ -238,11 +234,8 @@ rows_metadata_updated.send(
 
 2. **Task starts, metadata updated to "generating"**
    ```python
-   # Set metadata in database
-   AIFieldMetadataHandler.set_generating(ai_field, row_ids)
-
-   # Broadcast via WebSocket
-   AIFieldMetadataHandler.broadcast_generation_started(
+   # Use combined helper (preferred) - sets metadata AND broadcasts
+   AIFieldMetadataHandler.set_generating_and_broadcast(
        ai_field, row_ids, user
    )
    ```
@@ -263,7 +256,7 @@ rows_metadata_updated.send(
    }
    ```
 
-3. **AI generates value** (5-30 seconds)
+3. **AI generates value**
 
 4. **Task completes successfully**
    ```python
@@ -308,7 +301,6 @@ rows_metadata_updated.send(
    ```
 
    Note: Error details (message, type) are stored internally but not exposed in the API.
-   Errors expire after 1 hour and will no longer be returned.
 
 #### Message Type Comparison
 
@@ -325,28 +317,27 @@ rows_metadata_updated.send(
 
 ### Complete Lifecycle
 
-**Reference implementation**: `premium/backend/src/baserow_premium/fields/tasks.py`
+**Reference implementation**: `premium/backend/src/baserow_premium/fields/job_types.py`
 
-The AI field generation task (`generate_ai_values_for_rows`) demonstrates the complete metadata lifecycle:
+The AI field generation job (`GenerateAIValuesJobType` with `AIValueGenerator`) demonstrates the complete metadata lifecycle:
 
-1. **Check metadata availability**: Verify table has metadata column using `FieldMetadataHandler.is_metadata_available()`
+1. **API trigger**: User calls generate endpoint, which invokes `AIFieldHandler.start_ai_field_generation()`:
+   - Validates rows exist and AI model is available
+   - Calls `AIFieldMetadataHandler.set_generating_and_broadcast()` to set status and notify clients
+   - Creates async job via `JobHandler().create_and_start_job()`
 
-2. **Mark as generating**:
-   - Call `AIFieldMetadataHandler.set_generating(ai_field, row_ids)`
-   - Send `rows_metadata_updated` signal for real-time notification
+2. **Job execution**: `GenerateAIValuesJobType.run()` creates an `AIValueGenerator` instance:
+   - Checks metadata availability using `FieldMetadataHandler.is_metadata_available()`
+   - Processes rows in chunks, setting "generating" status for each chunk before processing
+   - Uses concurrent threads (controlled by `ai_max_concurrent_generations`) for AI calls
 
-3. **Generate AI value**: Call generative AI model
+3. **Per-row processing** (in `AIValueGenerator`):
+   - **On success**: Calls `AIFieldMetadataHandler.set_success()` then `RowHandler().update_row_by_id()` which triggers `rows_updated` signal with the new value
+   - **On error**: Calls `AIFieldMetadataHandler.set_error()` and sends `rows_metadata_updated` signal
 
-4. **Mark as success** (on completion):
-   - Wrap in `transaction.atomic()` block
-   - Call `AIFieldMetadataHandler.set_success()` BEFORE updating row
-   - Call `RowHandler().update_row_by_id()` which triggers `rows_updated` signal
+4. **Cleanup on cancellation/error**: `_cleanup_unprocessed_rows()` clears "generating" status from rows that were marked but never processed
 
-5. **Mark as error** (on exception):
-   - Call `AIFieldMetadataHandler.set_error()` with error details
-   - Send `rows_metadata_updated` signal for real-time notification
-
-**Critical detail**: Success metadata must be set **before** `update_row_by_id()` within the same transaction. This ensures the `rows_updated` signal includes the correct metadata state.
+**Critical detail**: Success metadata must be set **before** `update_row_by_id()`. This ensures the `rows_updated` signal includes the correct metadata state (success = no AI field metadata returned).
 
 ## Use Cases
 
@@ -437,41 +428,24 @@ with transaction.atomic():
 When updating status, preserve timestamps:
 
 ```python
-# Read existing metadata
-result = FieldMetadataHandler.get_metadata(model, [row_id], [field_id])
-existing = result.get(row_id, {}).get(field_id) or {}
-
-# Merge with new data
-metadata = {
-    **existing,  # Preserve old fields
-    MyMetadataKeys.STATUS: "completed",
-    MyMetadataKeys.FINISHED_AT: timezone.now().timestamp(),
-}
-
+# Use merge=True for atomic updates that preserve existing keys
 FieldMetadataHandler.set_metadata(
     model,
-    [MetadataUpdate(row_id=row_id, field_id=field_id, metadata=metadata)],
-    merge=False
+    [MetadataUpdate(
+        row_id=row_id,
+        field_id=field_id,
+        metadata={
+            MyMetadataKeys.STATUS: "completed",
+            MyMetadataKeys.FINISHED_AT: timezone.now().timestamp(),
+        }
+    )],
+    merge=True  # Uses jsonb_set for atomic merge
 )
 ```
 
 ### 5. Cleanup on Field Operations
 
-Metadata is automatically cleaned up when fields are deleted or modified via lifecycle hooks:
-
-**On field deletion** (`FieldHandler.delete_field()`):
-```python
-# Called automatically by FieldHandler
-FieldMetadataHandler.on_field_deleted(field)
-```
-
-**On field type change** (`FieldHandler.update_field()`):
-```python
-# Called automatically by FieldHandler
-FieldMetadataHandler.on_field_updated(field, field_type_changed=True)
-```
-
-These lifecycle methods encapsulate the logic for checking metadata availability and clearing it when needed. This ensures no orphaned metadata remains when fields are removed or fundamentally changed.
+Metadata is automatically cleaned up when fields are deleted or modified. The `FieldHandler` calls lifecycle hooks on `FieldMetadataHandler` during field deletion and type changes, ensuring no orphaned metadata remains.
 
 ## Performance Considerations
 
@@ -523,9 +497,9 @@ The field metadata system is currently in its initial implementation phase. The 
    - Viewing historical row versions will not show metadata at that time
    - Only current metadata state is available
 
-6. **Webhooks**: Metadata changes may not trigger all expected webhooks
-   - The `rows_metadata_updated` signal is separate from `rows_updated`
-   - Existing webhook filters may not capture metadata-only changes
+6. **Webhooks**: Metadata changes do not trigger webhooks
+   - Metadata is internal system state, not user data
+   - Only row value changes trigger webhooks
 
 
 ### Design Considerations

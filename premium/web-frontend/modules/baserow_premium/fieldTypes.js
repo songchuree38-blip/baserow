@@ -141,8 +141,12 @@ export class AIFieldType extends FieldType {
 
   onRowRealtimeUpdate(context, field, rowBefore, rowAfter, metadata) {
     // This method is called when an AI field value is updated via WebSocket.
-    // If we're here, it means the AI field value was just updated, which means
-    // any ongoing generation has completed (either successfully or with an error).
+    //
+    // NOTE: This implementation has coupling with the grid view store's
+    // UPDATE_ROW_METADATA mutation. This coupling exists because:
+    // - Success status is signaled by absence of metadata (not by "success" status)
+    // - The grid store doesn't automatically clear metadata on row updates
+    // - We need to clear stale "generating" status when the value is set
     //
     // This method is called from two places with different context shapes:
     // 1. realtime.js: context = { app, store } - called first, before view updates
@@ -161,11 +165,6 @@ export class AIFieldType extends FieldType {
     const newStatus = metadata?.ai_field?.[field.id]?.status
 
     // If there's no new status (success case), clear the generating metadata.
-    // This is needed because:
-    // 1. Success doesn't send a status (API returns null for success)
-    // 2. The row might not be in the metadata dict at all
-    // 3. UPDATE_ROW_IN_BUFFER won't update metadata if metadata[row.id] is undefined
-    // So we need to explicitly clear any stale "generating" status.
     if (!newStatus) {
       // Clear the field's metadata by setting it to null
       // The UPDATE_ROW_METADATA mutation handles null values by deleting the key

@@ -64,13 +64,8 @@ class AIFieldHandler:
         if ai_field.ai_generative_ai_model not in ai_models:
             raise ModelDoesNotBelongToType(model_name=ai_field.ai_generative_ai_model)
 
-        # Set "generating" status for visual feedback
-        has_metadata = AIFieldMetadataHandler.set_generating(ai_field, row_ids)
+        AIFieldMetadataHandler.set_generating_and_broadcast(ai_field, row_ids, user)
 
-        if has_metadata:
-            AIFieldMetadataHandler.broadcast_generation_started(ai_field, row_ids, user)
-
-        # Create and start the job asynchronously
         JobHandler().create_and_start_job(
             user,
             "generate_ai_values",

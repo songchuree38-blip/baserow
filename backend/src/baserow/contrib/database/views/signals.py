@@ -80,8 +80,8 @@ def update_view_index_if_view_group_by_changes(sender, view_group_by, **kwargs):
 def view_loaded_create_indexes_and_columns(sender, view, table_model, **kwargs):
     from baserow.contrib.database.table.tasks import (
         setup_created_by_and_last_modified_by_column,
-        setup_m2m_field_indexes_if_not_exist,
         setup_field_metadata_column,
+        setup_m2m_field_indexes_if_not_exist,
     )
     from baserow.contrib.database.views.handler import ViewIndexingHandler
 

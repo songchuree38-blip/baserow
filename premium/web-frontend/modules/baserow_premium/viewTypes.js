@@ -273,6 +273,15 @@ export class KanbanViewType extends PremiumViewType {
     this._setFieldToNull(context, field, 'single_select_field')
     this._setFieldToNull(context, field, 'card_cover_image_field')
   }
+
+  metadataUpdated({ store }, tableId, rowIds, metadata, storePrefix = '') {
+    if (this.isCurrentView(store, tableId)) {
+      store.dispatch(storePrefix + 'view/kanban/updateRowsMetadata', {
+        rowIds,
+        metadata,
+      })
+    }
+  }
 }
 
 export class CalendarViewType extends PremiumViewType {
@@ -556,6 +565,15 @@ export class CalendarViewType extends PremiumViewType {
 
     return view
   }
+
+  metadataUpdated({ store }, tableId, rowIds, metadata, storePrefix = '') {
+    if (this.isCurrentView(store, tableId)) {
+      store.dispatch(storePrefix + 'view/calendar/updateRowsMetadata', {
+        rowIds,
+        metadata,
+      })
+    }
+  }
 }
 
 export class TimelineViewType extends BaseBufferedRowViewTypeMixin(
@@ -619,6 +637,15 @@ export class TimelineViewType extends BaseBufferedRowViewTypeMixin(
 
   getComponent() {
     return TimelineView
+  }
+
+  metadataUpdated({ store }, tableId, rowIds, metadata, storePrefix = '') {
+    if (this.isCurrentView(store, tableId)) {
+      store.dispatch(storePrefix + 'view/timeline/updateRowMetadata', {
+        rowIds,
+        metadata,
+      })
+    }
   }
 }
 

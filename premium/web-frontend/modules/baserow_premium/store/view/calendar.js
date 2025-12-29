@@ -218,8 +218,52 @@ export const mutations = {
   UPDATE_ROW_VALUES(state, { row, values }) {
     Object.assign(row, values)
   },
-  UPDATE_ROW_METADATA(state, { row, rowMetadataType, updateFunction }) {
+  UPDATE_ROW_METADATA_TYPE(state, { row, rowMetadataType, updateFunction }) {
     updateRowMetadataType(row, rowMetadataType, updateFunction)
+  },
+  /**
+   * Updates row metadata in the calendar date stacks.
+   * Deep merges new metadata with existing metadata, removing keys with null values.
+   */
+  UPDATE_ROW_METADATA(state, { row, metadata }) {
+    // Find the row in any date stack
+    for (const stack of Object.values(state.dateStacks)) {
+      const index = stack.results.findIndex(
+        (item) => item && item.id === row.id
+      )
+      if (index !== -1) {
+        const existingRowState = stack.results[index]
+
+        // Deep merge new metadata with existing metadata
+        const existingMetadata = existingRowState._?.metadata || {}
+        const mergedMetadata = { ...existingMetadata }
+
+        // Deep merge each metadata type (e.g., ai_field)
+        Object.keys(metadata).forEach((metadataType) => {
+          if (!mergedMetadata[metadataType]) {
+            mergedMetadata[metadataType] = {}
+          }
+          // Deep merge field-level metadata, but remove fields with null values
+          const newTypeMetadata = { ...mergedMetadata[metadataType] }
+          Object.entries(metadata[metadataType]).forEach(([key, value]) => {
+            if (value === null) {
+              delete newTypeMetadata[key]
+            } else {
+              newTypeMetadata[key] = value
+            }
+          })
+          mergedMetadata[metadataType] = newTypeMetadata
+        })
+
+        // Use single Vue.set to ensure reactivity
+        if (!existingRowState._) {
+          Vue.set(existingRowState, '_', { metadata: mergedMetadata })
+        } else {
+          Vue.set(existingRowState._, 'metadata', mergedMetadata)
+        }
+        break
+      }
+    }
   },
   SET_ADHOC_FILTERING(state, adhocFiltering) {
     state.adhocFiltering = adhocFiltering
@@ -1024,8 +1068,26 @@ export const actions = {
     const target = getters.findStackIdAndIndex(rowId)
     if (target !== undefined) {
       const row = target[2]
-      commit('UPDATE_ROW_METADATA', { row, rowMetadataType, updateFunction })
+      commit('UPDATE_ROW_METADATA_TYPE', {
+        row,
+        rowMetadataType,
+        updateFunction,
+      })
     }
+  },
+  /**
+   * Updates row metadata for specific rows without changing row values.
+   * Called when a rows_metadata_updated websocket event is received.
+   */
+  updateRowsMetadata({ commit, getters }, { rowIds, metadata }) {
+    rowIds.forEach((rowId) => {
+      const target = getters.findStackIdAndIndex(rowId)
+      if (target !== undefined) {
+        const row = target[2]
+        const rowMetadata = metadata[rowId] || {}
+        commit('UPDATE_ROW_METADATA', { row, metadata: rowMetadata })
+      }
+    })
   },
 }
 

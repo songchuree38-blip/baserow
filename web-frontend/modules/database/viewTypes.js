@@ -1091,6 +1091,7 @@ export const BaseBufferedRowViewTypeMixin = (Base) =>
             fields,
             row,
             values,
+            metadata,
           }
         )
       }
@@ -1202,6 +1203,15 @@ export class GalleryViewType extends BaseBufferedRowViewTypeMixin(ViewType) {
         root: true,
       }
     )
+  }
+
+  metadataUpdated({ store }, tableId, rowIds, metadata, storePrefix = '') {
+    if (this.isCurrentView(store, tableId)) {
+      store.dispatch(storePrefix + 'view/gallery/updateRowMetadata', {
+        rowIds,
+        metadata,
+      })
+    }
   }
 }
 

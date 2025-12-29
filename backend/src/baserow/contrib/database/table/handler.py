@@ -38,6 +38,7 @@ from baserow.contrib.database.views.handler import ViewHandler
 from baserow.contrib.database.views.models import View
 from baserow.contrib.database.views.view_types import GridViewType
 from baserow.core.handler import CoreHandler
+from baserow.core.psycopg import errors as psycopg_errors
 from baserow.core.registries import ImportExportConfig, application_type_registry
 from baserow.core.telemetry.utils import baserow_trace_methods
 from baserow.core.trash.handler import TrashHandler
@@ -912,29 +913,6 @@ class TableHandler(metaclass=baserow_trace_methods(tracer)):
             update_fields=["created_by_column_added", "last_modified_by_column_added"]
         )
 
-    def _column_exists(self, table_name: str, column_name: str) -> bool:
-        """
-        Check if a column exists in the database table.
-
-        :param table_name: The name of the database table.
-        :param column_name: The name of the column to check.
-        :return: True if the column exists, False otherwise.
-        """
-
-        from django.db import connection
-
-        with connection.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT EXISTS (
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_name = %s AND column_name = %s
-                )
-                """,
-                [table_name, column_name],
-            )
-            return cursor.fetchone()[0]
-
     def create_field_metadata_column(self, table: Table):
         """
         Creates the field_metadata JSONB column for the provided table if it
@@ -951,19 +929,19 @@ class TableHandler(metaclass=baserow_trace_methods(tracer)):
         if table.field_metadata_column_added:
             return
 
-        table_name = table.get_database_table_name()
+        table.field_metadata_column_added = True
+        model = table.get_model(use_cache=False, field_ids=[])
 
-        # Check if column already exists in database (handles race conditions
-        # when multiple tasks try to create the column concurrently)
-        if not self._column_exists(table_name, FIELD_METADATA_COLUMN_NAME):
-            model = table.get_model(use_cache=False, field_ids=[])
+        try:
             with safe_django_schema_editor(atomic=False) as schema_editor:
                 field_metadata_field = model._meta.get_field(FIELD_METADATA_COLUMN_NAME)
                 schema_editor.add_field(model, field_metadata_field)
+        except DatabaseError as e:
+            if not isinstance(e.__cause__, psycopg_errors.DuplicateColumn):
+                raise
 
         self._create_field_metadata_gin_index(table)
 
-        table.field_metadata_column_added = True
         table.save(update_fields=["field_metadata_column_added"])
 
     def _create_field_metadata_gin_index(self, table: Table):
@@ -974,13 +952,22 @@ class TableHandler(metaclass=baserow_trace_methods(tracer)):
         :param table: Table to create the index for.
         """
 
-        from django.db import connection
+        from django.contrib.postgres.indexes import GinIndex
 
-        table_name = table.get_database_table_name()
+        model = table.get_model(use_cache=False, field_ids=[])
         index_name = f"tbl_{table.id}_field_metadata_gin_idx"
 
-        with connection.cursor() as cursor:
-            cursor.execute(
-                f'CREATE INDEX IF NOT EXISTS "{index_name}" '
-                f'ON "{table_name}" USING GIN ("{FIELD_METADATA_COLUMN_NAME}")'
-            )
+        gin_index = GinIndex(
+            fields=[FIELD_METADATA_COLUMN_NAME],
+            name=index_name,
+        )
+
+        try:
+            with safe_django_schema_editor(atomic=False) as schema_editor:
+                schema_editor.add_index(model, gin_index)
+        except DatabaseError as e:
+            if not isinstance(
+                e.__cause__,
+                (psycopg_errors.DuplicateTable, psycopg_errors.DuplicateObject),
+            ):
+                raise

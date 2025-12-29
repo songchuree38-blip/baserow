@@ -513,12 +513,12 @@ class AIValueGenerator:
                     self.ai_field.id,
                     str(exc),
                 )
-            rows_metadata_updated.send(
-                sender=self,
-                table=self.table,
-                row_ids=[row.id],
-                user=self.user,
-            )
+                rows_metadata_updated.send(
+                    sender=self,
+                    table=self.table,
+                    row_ids=[row.id],
+                    user=self.user,
+                )
 
         if not self.has_errors:
             rows_ai_values_generation_error.send(
@@ -535,63 +535,18 @@ class AIValueGenerator:
     def update_value(self, row: GeneratedTableModel, value: Any):
         """
         Updates AI field value for the row with the value returned from the AI model.
-
-        Uses direct model update instead of row_handler.update_row_by_id() to avoid
-        triggering the rows_updated signal. Instead, we manually send the websocket
-        message via Celery broadcast.
         """
 
-        with transaction.atomic():
-            if self.has_metadata_column:
-                AIFieldMetadataHandler.set_success(self.model, row.id, self.ai_field.id)
+        if self.has_metadata_column:
+            AIFieldMetadataHandler.set_success(self.model, row.id, self.ai_field.id)
 
-            # Direct model update to avoid triggering rows_updated signal
-            self.model.objects.filter(id=row.id).update(
-                **{self.ai_field.db_column: value}
-            )
-
-        # Refresh the row to get the updated value for broadcasting
-        row.refresh_from_db()
-
-        # Send websocket update via Celery broadcast
-        self._broadcast_row_updated(row)
-
-    def _broadcast_row_updated(self, row: GeneratedTableModel):
-        """
-        Send rows_updated websocket message via Celery broadcast.
-        """
-
-        from baserow.contrib.database.api.rows.serializers import (
-            RowSerializer,
-            get_row_serializer_class,
-        )
-        from baserow.contrib.database.rows.registries import row_metadata_registry
-        from baserow.contrib.database.ws.rows.signals import RealtimeRowMessages
-        from baserow.ws.registries import page_registry
-
-        table_page_type = page_registry.get("table")
-
-        # Serialize the updated row
-        serialized_rows = get_row_serializer_class(
-            self.model, RowSerializer, is_response=True
-        )([row], many=True).data
-
-        # Get metadata for the row (includes the success status we just set)
-        metadata = row_metadata_registry.generate_and_merge_metadata_for_rows(
-            self.user, self.table, [row.id]
-        )
-
-        # Send via Celery broadcast (skip owner - frontend has optimistic update)
-        table_page_type.broadcast(
-            RealtimeRowMessages.rows_updated(
-                table_id=self.table.id,
-                serialized_rows_before_update=[],  # Not needed for AI field updates
-                serialized_rows=serialized_rows,
-                metadata=metadata,
-                updated_field_ids=[self.ai_field.id],
-            ),
-            getattr(self.user, "web_socket_id", None),
-            table_id=self.table.id,
+        self.row_handler.update_row_by_id(
+            self.user,
+            self.table,
+            row.id,
+            {self.ai_field.db_column: value},
+            model=self.model,
+            values_already_prepared=True,
         )
 
     def raise_if_error(self):
@@ -755,8 +710,7 @@ class AIValueGenerator:
         # Set "generating" metadata and broadcast for this chunk
         if self.has_metadata_column:
             self.all_row_ids_with_generating_status.extend(row_ids)
-            AIFieldMetadataHandler.set_generating(self.ai_field, row_ids)
-            AIFieldMetadataHandler.broadcast_generation_started(
+            AIFieldMetadataHandler.set_generating_and_broadcast(
                 self.ai_field, row_ids, self.user
             )
 
@@ -784,10 +738,13 @@ class AIValueGenerator:
         ]
 
         if unprocessed_row_ids:
-            AIFieldMetadataHandler.clear_metadata(self.ai_field, unprocessed_row_ids)
-            rows_metadata_updated.send(
-                sender=self.signal_sender,
-                table=self.table,
-                row_ids=unprocessed_row_ids,
-                user=self.user,
-            )
+            with transaction.atomic():
+                AIFieldMetadataHandler.clear_metadata(
+                    self.ai_field, unprocessed_row_ids
+                )
+                rows_metadata_updated.send(
+                    sender=self.signal_sender,
+                    table=self.table,
+                    row_ids=unprocessed_row_ids,
+                    user=self.user,
+                )

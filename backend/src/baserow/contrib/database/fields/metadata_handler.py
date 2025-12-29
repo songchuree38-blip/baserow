@@ -38,26 +38,6 @@ class MetadataUpdate:
 
 
 class FieldMetadataHandler:
-    """
-    Centralized handler for managing field metadata stored in the
-    field_metadata JSONB column.
-
-    This handler ensures consistent access patterns and provides
-    utilities for updating metadata efficiently using PostgreSQL's
-    native JSONB functions for atomic operations.
-
-    API Summary:
-    - is_metadata_available(model) - Check if metadata column exists
-    - get_model_field() - Get the field definition for adding the column
-    - get_metadata(model, row_ids, field_ids) - Get metadata for rows (always list)
-    - set_metadata(model, updates, merge) - Set metadata for rows (always list)
-    - delete_metadata(model, field_id, row_ids) - Delete field metadata
-    - get_rows_by_metadata(model, field_id, key, value) - Query by metadata
-    - get_rows_with_metadata(model, field_id) - Get rows that have metadata
-    - on_field_updated(field, field_type_changed) - Handle field updates
-    - on_field_deleted(field) - Handle field deletion
-    """
-
     METADATA_COLUMN = FIELD_METADATA_COLUMN_NAME
 
     @classmethod

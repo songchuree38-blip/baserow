@@ -444,7 +444,7 @@ class AIFieldType(CollationSortMixin, SelectOptionBaseFieldType):
         if not table.field_metadata_column_added:
             table_to_update = TableHandler().get_table_for_update(table.id)
             TableHandler().create_field_metadata_column(table_to_update)
-            table.refresh_from_db()
+            table.field_metadata_column_added = True
 
         ai_output_type = field_kwargs.get(
             "ai_output_type", AIField._meta.get_field("ai_output_type").default
